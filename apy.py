@@ -795,8 +795,14 @@ elif st.session_state.etapa == "VisaoGeral":
                 st.session_state.etapa = "Temporal"
                 st.rerun()
         else:
-            st.button("📈 Séries Temporais (indisponível)", use_container_width=True, disabled=True)
-            st.caption("Precisa de dados mensais (Ano/Mês); este arquivo só tem colunas de ano puro.")
+            if st.button("📈 Séries Temporais (anual)", use_container_width=True):
+                st.session_state.etapa = "Temporal"
+                st.rerun()
+            st.caption(
+                "Este arquivo só tem colunas de ano puro: Mann-Kendall e Tabela de "
+                "Tendência funcionam normalmente. Decomposição STL e Índice Sazonal "
+                "não ficam disponíveis (exigem granularidade mensal)."
+            )
 
     if st.button("⬅️ Trocar arquivo do SIH"):
         st.session_state.etapa = "Upload"
@@ -1375,22 +1381,28 @@ elif st.session_state.etapa == "Temporal":
         st.session_state.etapa = "Upload"
         st.rerun()
 
-    if not st.session_state.get("granularidade_mensal", False):
-        st.warning(
-            "Este arquivo só tem colunas de ano puro (sem competência mês/ano), então o "
-            "módulo de Séries Temporais não está disponível. Use Mapas Coropléticos ou "
-            "Espacial (Moran/LISA) na Visão Geral."
-        )
-        if st.button("⬅️ Voltar à Visão Geral"):
-            st.session_state.etapa = "VisaoGeral"
-            st.rerun()
-        st.stop()
+    granularidade_mensal = st.session_state.get("granularidade_mensal", False)
 
-    df_sih = st.session_state.df_sih          # tabela mensal original (não a anual)
+    df_sih = st.session_state.df_sih          # tabela original (mensal ou anual, conforme o arquivo)
     df_pop = st.session_state.df_pop
     colunas_data = st.session_state.colunas_data
     COL_LOCAL_POP = df_pop.columns[0]
     anos_pop = colunas_de_ano(df_pop)
+
+    if not granularidade_mensal:
+        st.info(
+            "Este arquivo só tem colunas de ano puro (sem competência mês/ano). Por isso, "
+            "**Decomposição STL** e **Análise do Índice Sazonal** não ficam disponíveis "
+            "(elas dependem de sazonalidade dentro do ano, que só existe com dados mensais) "
+            "— mas **Tendência Mann-Kendall** e **Tabela de Tendência** funcionam normalmente "
+            "com uma série de 1 ponto por ano."
+        )
+
+    ANALISES_DISPONIVEIS = (
+        ["Decomposição STL", "Tendência Mann-Kendall", "Análise do Índice Sazonal", "Tabela de Tendência"]
+        if granularidade_mensal
+        else ["Tendência Mann-Kendall", "Tabela de Tendência"]
+    )
 
     with st.sidebar:
         st.header("⚙️ Configurações — Séries Temporais")
@@ -1400,10 +1412,7 @@ elif st.session_state.etapa == "Temporal":
             st.rerun()
 
         st.subheader("Escolha o Tipo de Análise")
-        tipo_analise = st.radio(
-            "Teste temporal:",
-            ["Decomposição STL", "Tendência Mann-Kendall", "Análise do Índice Sazonal", "Tabela de Tendência"],
-        )
+        tipo_analise = st.radio("Teste temporal:", ANALISES_DISPONIVEIS)
 
         municipio_escolhido = None
         if tipo_analise == "Tabela de Tendência":
@@ -1413,7 +1422,11 @@ elif st.session_state.etapa == "Temporal":
                 "uma vez só, o início e o fim do período para Norte, Nordeste, Sudeste, "
                 "Sul, Centro-Oeste e Brasil."
             )
-            periodicidade = st.radio("Periodicidade da série:", ["anual", "mensal"])
+            if granularidade_mensal:
+                periodicidade = st.radio("Periodicidade da série:", ["anual", "mensal"])
+            else:
+                periodicidade = "anual"
+                st.caption("Periodicidade fixa em **anual** (o arquivo carregado só tem colunas de ano puro).")
         else:
             st.subheader("Nível Observacional")
             nivel = st.selectbox("Nível:", ["País", "Região", "Estado", "Município"])
@@ -1449,14 +1462,20 @@ elif st.session_state.etapa == "Temporal":
 
         st.subheader("Período")
         datas_disponiveis = sorted(colunas_data.values())
-        opcoes_periodo = [f"{d:%Y-%m}" for d in datas_disponiveis]
-        mes_inicial = st.selectbox("Mês inicial (AAAA-MM):", opcoes_periodo, index=0)
-        mes_final = st.selectbox("Mês final (AAAA-MM):", opcoes_periodo, index=len(opcoes_periodo) - 1)
+        if granularidade_mensal:
+            rotulo_periodo = "Mês"
+            opcoes_periodo = [f"{d:%Y-%m}" for d in datas_disponiveis]
+        else:
+            rotulo_periodo = "Ano"
+            opcoes_periodo = [f"{d:%Y}" for d in datas_disponiveis]
+        mapa_periodo = dict(zip(opcoes_periodo, datas_disponiveis))
+        mes_inicial = st.selectbox(f"{rotulo_periodo} inicial:", opcoes_periodo, index=0)
+        mes_final = st.selectbox(f"{rotulo_periodo} final:", opcoes_periodo, index=len(opcoes_periodo) - 1)
 
         if tipo_analise != "Tabela de Tendência":
             st.subheader("Aparência")
             titulo_grafico = st.text_input("Título do Gráfico:", value="Série Temporal")
-            rotulo_x = st.text_input("Rótulo do Eixo X:", value="Ano/Mês")
+            rotulo_x = st.text_input("Rótulo do Eixo X:", value=("Ano/Mês" if granularidade_mensal else "Ano"))
             rotulo_y = st.text_input("Rótulo do Eixo Y:", value=tipo_serie)
             largura_grafico = st.slider("Largura do Gráfico:", 5, 20, 10)
             altura_grafico = st.slider("Altura do Gráfico:", 5, 20, 8)
@@ -1503,15 +1522,25 @@ elif st.session_state.etapa == "Temporal":
 
             # ---------- Monta a série de casos absolutos ----------
             serie_casos = montar_serie_casos(df_subset, colunas_data)
-            serie_casos = serie_casos.loc[pd.Timestamp(mes_inicial + "-01"):pd.Timestamp(mes_final + "-01")]
+            serie_casos = serie_casos.loc[mapa_periodo[mes_inicial]:mapa_periodo[mes_final]]
 
-            if len(serie_casos) < 2 * PERIODO_SAZONAL:
-                st.error(
-                    f"Poucos meses no período selecionado ({len(serie_casos)}). "
-                    f"São necessários pelo menos {2 * PERIODO_SAZONAL} meses (2 ciclos anuais) "
-                    "para decompor Tendência/Sazonalidade/Resíduo com confiabilidade."
-                )
-                st.stop()
+            if granularidade_mensal:
+                if len(serie_casos) < 2 * PERIODO_SAZONAL:
+                    st.error(
+                        f"Poucos meses no período selecionado ({len(serie_casos)}). "
+                        f"São necessários pelo menos {2 * PERIODO_SAZONAL} meses (2 ciclos anuais) "
+                        "para decompor Tendência/Sazonalidade/Resíduo com confiabilidade."
+                    )
+                    st.stop()
+            else:
+                MINIMO_ANOS_MK = 4
+                if len(serie_casos) < MINIMO_ANOS_MK:
+                    st.error(
+                        f"Poucos anos no período selecionado ({len(serie_casos)}). "
+                        f"São necessários pelo menos {MINIMO_ANOS_MK} anos para o teste de "
+                        "Mann-Kendall ter alguma confiabilidade."
+                    )
+                    st.stop()
 
             # ---------- Aplica a métrica escolhida ----------
             if tipo_serie == "Número Absoluto":
@@ -1547,22 +1576,32 @@ elif st.session_state.etapa == "Temporal":
                     st.stop()
                 serie = serie.dropna()
 
-            # ---------- Alerta de possível competência incompleta no SIH ----------
+            # ---------- Alerta de possível competência incompleta (mensal ou anual) ----------
             if mes_final == opcoes_periodo[-1] and len(serie) >= 4:
                 janela_recente = serie.iloc[-7:-1] if len(serie) >= 7 else serie.iloc[:-1]
                 media_recente = janela_recente.mean()
                 ultimo_valor = serie.iloc[-1]
                 if pd.notna(media_recente) and media_recente > 0 and ultimo_valor < 0.6 * media_recente:
-                    st.warning(
-                        f"⚠️ O último mês da série ({serie.index[-1]:%m/%Y} = {ultimo_valor:,.1f}) "
-                        f"está bem abaixo da média dos meses anteriores ({media_recente:,.1f}). "
-                        "Isso costuma ser sintoma de competência ainda incompleta no SIH/DATASUS "
-                        "— hospitais enviam AIH com atraso, então os últimos meses sobem aos poucos "
-                        "conforme os dados são consolidados. Se não for uma queda real, considere "
-                        "escolher um 'Mês final' anterior na barra lateral (excluindo esse(s) "
-                        "último(s) mês(es)) antes de rodar STL, Mann-Kendall ou Índice Sazonal, "
-                        "para não distorcer o resultado."
-                    )
+                    if granularidade_mensal:
+                        st.warning(
+                            f"⚠️ O último mês da série ({serie.index[-1]:%m/%Y} = {ultimo_valor:,.1f}) "
+                            f"está bem abaixo da média dos meses anteriores ({media_recente:,.1f}). "
+                            "Isso costuma ser sintoma de competência ainda incompleta no SIH/DATASUS "
+                            "— hospitais enviam AIH com atraso, então os últimos meses sobem aos poucos "
+                            "conforme os dados são consolidados. Se não for uma queda real, considere "
+                            "escolher um 'Mês final' anterior na barra lateral (excluindo esse(s) "
+                            "último(s) mês(es)) antes de rodar STL, Mann-Kendall ou Índice Sazonal, "
+                            "para não distorcer o resultado."
+                        )
+                    else:
+                        st.warning(
+                            f"⚠️ O último ano da série ({serie.index[-1]:%Y} = {ultimo_valor:,.1f}) "
+                            f"está bem abaixo da média dos anos anteriores ({media_recente:,.1f}). "
+                            "Isso costuma ser sintoma de notificação/consolidação ainda incompleta "
+                            "para o ano mais recente (casos chegam com atraso ao SIH/SINAN). Se não "
+                            "for uma queda real, considere escolher um 'Ano final' anterior na barra "
+                            "lateral antes de rodar Mann-Kendall, para não distorcer o resultado."
+                        )
 
             y_min_val = float(y_min) if y_min.strip() else None
             y_max_val = float(y_max) if y_max.strip() else None
@@ -1620,15 +1659,24 @@ elif st.session_state.etapa == "Temporal":
         # TENDÊNCIA MANN-KENDALL (modificado por Hamed e Rao, 1998)
         # ================================================================
         elif tipo_analise == "Tendência Mann-Kendall":
-            with st.spinner("Calculando a tendência (STL, só para visualização)..."):
-                resultado_stl, _, _ = rodar_stl(serie)
-
             with st.spinner("Rodando o Teste de Mann-Kendall modificado (Hamed e Rao, 1998)..."):
                 resultado_mk = rodar_mann_kendall(serie)
 
+            if granularidade_mensal:
+                with st.spinner("Calculando a tendência (STL, só para visualização)..."):
+                    resultado_stl, _, _ = rodar_stl(serie)
+                linha_tendencia = resultado_stl.trend
+                rotulo_tendencia = "Tendência (STL)"
+            else:
+                # Com 1 ponto por ano não há sazonalidade intra-anual para o STL
+                # decompor, então a linha de tendência usa a própria reta de
+                # Sen (slope/intercept) estimada pelo teste de Mann-Kendall.
+                linha_tendencia = resultado_mk.intercept + resultado_mk.slope * np.arange(len(serie))
+                rotulo_tendencia = "Tendência (Inclinação de Sen)"
+
             fig, ax = plt.subplots(figsize=(largura_grafico, altura_grafico))
             ax.plot(serie.index, serie.values, color="tab:blue", label="Série Original", linewidth=1)
-            ax.plot(serie.index, resultado_stl.trend, color="tab:red", label="Tendência (STL)", linewidth=1.5)
+            ax.plot(serie.index, linha_tendencia, color="tab:red", label=rotulo_tendencia, linewidth=1.5)
             ax.set_title(titulo_grafico, fontsize=14, fontweight="bold")
             ax.set_xlabel(rotulo_x)
             ax.set_ylabel(rotulo_y)
@@ -1650,10 +1698,16 @@ elif st.session_state.etapa == "Temporal":
             st.dataframe(tabela_resultado, use_container_width=True)
 
             if resultado_mk.p < ALPHA:
+                if granularidade_mensal:
+                    texto_inclinacao = (
+                        f"inclinação de Sen = {resultado_mk.slope:.4f} por mês; "
+                        f"anualizada ≈ {resultado_mk.slope * 12:.4f}"
+                    )
+                else:
+                    texto_inclinacao = f"inclinação de Sen = {resultado_mk.slope:.4f} por ano"
                 st.success(
                     f"Valor-p = {formatar_pvalor(resultado_mk.p)} (< {ALPHA:.2f}): há uma tendência "
-                    f"**{tendencia_pt}** estatisticamente significativa (inclinação de Sen = "
-                    f"{resultado_mk.slope:.4f} por mês; anualizada ≈ {resultado_mk.slope * 12:.4f})."
+                    f"**{tendencia_pt}** estatisticamente significativa ({texto_inclinacao})."
                 )
             else:
                 st.info(
@@ -1661,10 +1715,11 @@ elif st.session_state.etapa == "Temporal":
                     "— os demais resultados do teste não precisam ser interpretados."
                 )
 
+            fmt_data = "%m/%Y" if granularidade_mensal else "%Y"
             variacao_pct = ((serie.iloc[-1] - serie.iloc[0]) / serie.iloc[0] * 100) if serie.iloc[0] != 0 else np.nan
             st.caption(
-                f"Variação entre o primeiro ({serie.index[0]:%m/%Y}: {serie.iloc[0]:,.2f}) e o "
-                f"último ({serie.index[-1]:%m/%Y}: {serie.iloc[-1]:,.2f}) dado do período: "
+                f"Variação entre o primeiro ({serie.index[0].strftime(fmt_data)}: {serie.iloc[0]:,.2f}) e o "
+                f"último ({serie.index[-1].strftime(fmt_data)}: {serie.iloc[-1]:,.2f}) dado do período: "
                 f"{variacao_pct:,.1f}%."
             )
             st.caption(
@@ -1734,8 +1789,8 @@ elif st.session_state.etapa == "Temporal":
                 tipo_serie if base_taxa is not None else "Taxa por 100.000 hab. (padrão)"
             )
 
-            inicio_ts = pd.Timestamp(mes_inicial + "-01")
-            fim_ts = pd.Timestamp(mes_final + "-01")
+            inicio_ts = mapa_periodo[mes_inicial]
+            fim_ts = mapa_periodo[mes_final]
 
             series_abs_tendencia = {}
             series_taxa_tendencia = {}
